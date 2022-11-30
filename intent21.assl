@@ -1,0 +1,306 @@
+//==================== Autonomic Network - SELF-HEALING ===================
+//================== self-healing for Host Failure Simulation ==================
+//Intent: Remove the unfunctional Host!
+//In this scenario, we consider that a host that is not functional any more
+//should be recognized and removed from the domain or replaced with a new Host
+//and this should also be reported to the autonomic manager
+//metric to check if a host is reachable or not 
+
+
+
+AS AutonomicNetwork {
+
+	ASSELF_MANAGEMENT {
+		SELF_HEALING {
+			FLUENT inCrashingDevice {
+				INITIATED_BY { EVENTS.DeviceCrashed }
+				TERMINATED_BY { EVENTS.managementNotified }
+			}
+			MAPPING {
+				CONDITIONS { inCrashingDevice }
+				DO_ACTIONS { ACTIONS.notifyManagement }
+			}
+		}
+	} // ASSELF_MANAGEMENT
+
+	ASARCHITECTURE {
+		AELIST {AES.Host, AES.Coordinator}
+		DIRECT_DEPENDENCIES { DEPENDENCY AES.Host { AES.Coordinator }}
+		TRANSITIVE_DEPENDENCIES { DEPENDENCY AES.Coordinator  {AES.Host }}
+		GROUPS {
+			GROUP discovery {
+				MEMBERS { AES.Host, AES.Coordinator }
+				COUNCIL { AES.Coordinator	 }
+			}
+		}
+	}
+
+	ACTIONS {
+		ACTION notifyManagement { //notify management for the crashed device
+			GUARDS { ASSELF_MANAGEMENT.SELF_HEALING.inCrashingDevice }
+			DOES { CALL ASIP.FUNCTIONS.sendDeviceCrashedMsg }
+		}
+	}
+
+	EVENTS {
+		EVENT DeviceCrashed { }
+		EVENT managementNotified {
+			ACTIVATION  { SENT { ASIP.MESSAGES.msgDeviceCrashed } }
+		}
+	} // EVENTS
+
+} // AS AutonomicNetwork
+
+//==================== AS interaction protocol ============
+ASIP {
+	MESSAGES {
+		MESSAGE msgDeviceCrashed {
+			SENDER { ANY }
+			RECEIVER { ANY }
+			PRIORITY { 1 }
+			MSG_TYPE {	TEXT }
+			BODY { "Crashed Device" }
+		}
+	}
+	CHANNELS {
+		CHANNEL Public_Link {
+			ACCEPTS { ASIP.MESSAGES.msgDeviceCrashed }
+			ACCESS { SEQUENTIAL }
+			DIRECTION { INOUT } }
+	}
+	FUNCTIONS {
+		FUNCTION sendDeviceCrashedMsg {
+			DOES { ASIP.MESSAGES.msgDeviceCrashed >> ASIP.CHANNELS.Public_Link }
+		}
+	}
+}
+
+//==================== autonomic elements ===================
+AES {
+//==================== Host ========================
+AE Host {
+  AESELF_MANAGEMENT {
+    SELF_HEALING {
+      FLUENT InUnfunctional { //this fluent shows the state that a host is not functional
+        INITIATED_BY { EVENTS.Unfunctionality } //This event starts the state of the node when the host is unfunctional
+        TERMINATED_BY { EVENTS.ToolChecked, EVENTS.ToolNotChecked }//These events finish the state of unfunctionality for a host, and they occur when the monitoring tool on the host is either checked or not
+                 }
+      FLUENT InToolInActive {
+        INITIATED_BY { EVENTS.ToolInActive }
+        TERMINATED_BY { EVENTS.IsMsgToolInActiveSent}
+        }
+      FLUENT InFunctionalityNotif {
+        INITIATED_BY { EVENTS.TimeToSendFunctionalityMsg }
+        TERMINATED_BY { EVENTS.IsMsgFunctionalitySent, EVENTS.FunctionalityMsgNotSent }
+        }
+      FLUENT InUnFunctionalitySimulation {
+        INITIATED_BY { EVENTS.TimeToSimulateUnfunctionality }
+        TERMINATED_BY { EVENTS.Unfunctionality, EVENTS.HostInUnfunctional }
+        }
+      MAPPING {
+        CONDITIONS { InUnfunctional }
+        DO_ACTIONS { ACTIONS.CheckANTool }
+        }
+      MAPPING {
+        CONDITIONS { InToolInActive }
+        DO_ACTIONS { ACTIONS.NotifyForInActiveTool }
+        }
+      MAPPING {
+        CONDITIONS { InFunctionalityNotif }
+        DO_ACTIONS { ACTIONS.NotifyForFunctionality }
+        }
+      MAPPING {
+        CONDITIONS { InUnFunctionalitySimulation }
+        DO_ACTIONS { ACTIONS.SimulateUnFunctionality }
+        }
+      }
+    } // AESELF_MANAGEMENT
+  FRIENDS {AELIST { AES.Coordinator }}
+  AEIP {
+    MESSAGES {
+      FINAL MESSAGE ToolInActiveMsg {
+        SENDER { AES.Host }
+        RECEIVER { AES.Coordinator }
+        MSG_TYPE { TEXT }
+        BODY { "Tool is Inactive" }
+        }
+      FINAL MESSAGE FunctionalityMsg {
+        SENDER { AES.Host }
+        RECEIVER { AES.Coordinator }
+        MSG_TYPE { TEXT }
+        BODY { "Active" }
+        }
+        }
+    CHANNELS {
+      CHANNEL Private_Link {
+        ACCEPTS { AEIP.MESSAGES.ToolInActiveMsg , AEIP.MESSAGES.FunctionalityMsg }
+        ACCESS { SEQUENTIAL }
+        DIRECTION { INOUT }
+        }
+        }
+    FUNCTIONS {
+      FUNCTION SendToolInActiveMsg {
+        DOES { AEIP.MESSAGES.ToolInActiveMsg >> AEIP.CHANNELS.Private_Link }
+        }
+      FUNCTION SendFunctionalityMsg {
+        DOES { AEIP.MESSAGES.FunctionalityMsg >> AEIP.CHANNELS.Private_Link }
+    }
+    }
+    MANAGED_ELEMENTS {
+      MANAGED_ELEMENT Host {
+      INTERFACE_FUNCTION getNetworkMetric { RETURNS { DECIMAL } }
+        }  }
+        } // AEIP
+    ACTIONS {
+      ACTION IMPL CheckTool {
+        RETURNS { BOOLEAN }
+        TRIGGERS { EVENTS.ToolChecked }
+        }
+      ACTION CheckANTool {
+        GUARDS { AESELF_MANAGEMENT.SELF_HEALING.InUnfunctional AND METRICS.NetworkMetric}
+        VARS { BOOLEAN canOperate }
+        DOES { canOperate = true; CALL ACTIONS.CheckTool }
+        TRIGGERS { IF (not canOperate) THEN EVENTS.ToolInActive END }
+        ONERR_TRIGGERS { EVENTS.ToolNotChecked }
+        }
+      ACTION NotifyForInActiveTool {
+        GUARDS { AESELF_MANAGEMENT.SELF_HEALING.InToolInActive }
+        DOES { CALL AEIP.FUNCTIONS.SendToolInActiveMsg }
+        }
+      ACTION NotifyForFunctionality {
+        GUARDS { AESELF_MANAGEMENT.SELF_HEALING.InFunctionalityNotif AND METRICS.NetworkMetric }
+        DOES { CALL AEIP.FUNCTIONS.SendFunctionalityMsg }
+        ONERR_TRIGGERS { EVENTS.FunctionalityMsgNotSent }
+        }
+      ACTION SimulateUnFunctionality {
+        GUARDS { AESELF_MANAGEMENT.SELF_HEALING.InUnFunctionalitySimulation AND METRICS.NetworkMetric }
+        DOES { SET METRICS.NetworkMetric.VALUE = 0.0001 } //change
+        ONERR_TRIGGERS { EVENTS.HostInUnfunctional }
+          }
+        } // ACTIONS
+    EVENTS {
+      EVENT Unfunctionality {
+        GUARDS { not METRICS.NetworkMetric }
+        ACTIVATION { CHANGED { METRICS.NetworkMetric } } }
+      EVENT IsMsgToolInActiveSent { ACTIVATION { SENT { AEIP.MESSAGES.ToolInActiveMsg } } }
+      EVENT ToolInActive { }
+      EVENT ToolChecked { }
+      EVENT ToolNotChecked { }
+      EVENT TimeToSendFunctionalityMsg { ACTIVATION { PERIOD { 1 min } } }
+      EVENT FunctionalityMsgNotSent { }
+      EVENT IsMsgFunctionalitySent { ACTIVATION { SENT { AEIP.MESSAGES.FunctionalityMsg } } }
+      EVENT TimeToSimulateUnfunctionality { ACTIVATION { PERIOD { 45 sec } } }
+      EVENT HostInUnfunctional { }
+      } // EVENTS
+    METRICS {
+      METRIC NetworkMetric {
+        METRIC_TYPE { RESOURCE }
+        METRIC_SOURCE { AEIP.MANAGED_ELEMENTS.Host.getNetworkMetric }
+        DESCRIPTION { "" }
+        MEASURE_UNIT { "" }
+        VALUE { 100 }//change
+        THRESHOLD_CLASS { DECIMAL [0.001 ~ ) } //change
+        }
+      }
+  } // AE Host
+//==================== Coordinator ========================
+AE Coordinator {
+  AESELF_MANAGEMENT {
+    SELF_HEALING {
+      FLUENT InUnfunctional {
+        INITIATED_BY { EVENTS.Unfunctionality }
+        TERMINATED_BY { EVENTS.DeviceChecked, AS.EVENTS.DeviceCrashed }
+        }
+      FLUENT InFunctionalityNotif {
+        INITIATED_BY { EVENTS.TimeToReceiveFunctionalityMsg }
+        TERMINATED_BY { EVENTS.MsgFunctionalityReceived, AS.EVENTS.DeviceCrashed }
+        }
+      FLUENT InCheckingHostTool {
+        INITIATED_BY { EVENTS.MsgFunctionalityReceived }
+        TERMINATED_BY { EVENTS.ToolOk, EVENTS.ToolNotFound }
+        }
+      FLUENT InReconfiguration {
+        INITIATED_BY { EVENTS.ToolNotFound }
+        TERMINATED_BY { EVENTS.reconfigurationDone, EVENTS.reconfigurationFailed }
+        }
+      MAPPING {
+        CONDITIONS { InUnfunctional }
+        DO_ACTIONS { ACTIONS.CheckDevice }
+        }
+      MAPPING {
+        CONDITIONS { InFunctionalityNotif }
+        DO_ACTIONS { ACTIONS.ConfirmFunctionality }
+        }
+      MAPPING {
+        CONDITIONS { InCheckingHostTool }
+        DO_ACTIONS { ACTIONS.CheckHostToolStatus }
+        }
+      MAPPING {
+        CONDITIONS { InReconfiguration }
+        DO_ACTIONS { ACTIONS.Reconfigure }
+        }
+    }
+  } // AESELF_MANAGEMENT
+AEIP {
+  FUNCTIONS {
+    FUNCTION ReceiveFunctionalityMsg {
+      DOES { AES.Host.AEIP.MESSAGES.FunctionalityMsg << AES.Host.AEIP.CHANNELS.Private_Link}
+    }
+    FUNCTION ReceivedToolInActiveMsg {
+      DOES { AES.Host.AEIP.MESSAGES.ToolInActiveMsg << AES.Host.AEIP.CHANNELS.Private_Link }
+    }
+  }
+  MANAGED_ELEMENTS {
+    MANAGED_ELEMENT Coordinator {
+    INTERFACE_FUNCTION getNetworkMetric { RETURNS { DECIMAL } }
+    }
+  }
+} // AEIP
+ACTIONS {
+  ACTION IMPL CheckDevice {
+    TRIGGERS { EVENTS.DeviceChecked }
+    ONERR_TRIGGERS { AS.EVENTS.DeviceCrashed }
+  }
+  ACTION ConfirmFunctionality {
+    GUARDS { AESELF_MANAGEMENT.SELF_HEALING.InFunctionalityNotif }
+    ENSURES { EVENTS.MsgFunctionalityReceived }
+    DOES { CALL AEIP.FUNCTIONS.ReceiveFunctionalityMsg }
+    ONERR_TRIGGERS { AS.EVENTS.DeviceCrashed }
+  }
+  ACTION CheckHostToolStatus {
+    GUARDS { AESELF_MANAGEMENT.SELF_HEALING.InCheckingHostTool }
+    DOES { CALL AEIP.FUNCTIONS.ReceivedToolInActiveMsg }
+    TRIGGERS {
+    IF EVENTS.msgToolInActiveReceived THEN EVENTS.ToolNotFound END
+    ELSE EVENTS.ToolOk END
+  }
+  }
+  ACTION IMPL Reconfigure {
+    GUARDS { AESELF_MANAGEMENT.SELF_HEALING.InReconfiguration }
+    TRIGGERS { EVENTS.reconfigurationDone }
+    ONERR_TRIGGERS { EVENTS.reconfigurationFailed }
+  }
+}
+EVENTS {
+  EVENT Unfunctionality {
+    GUARDS { not METRICS.NetworkMetric }
+    ACTIVATION { CHANGED { METRICS.NetworkMetric } }}
+  EVENT DeviceChecked { }
+  EVENT TimeToReceiveFunctionalityMsg { ACTIVATION { PERIOD { 75 sec } } }
+  EVENT MsgFunctionalityReceived { ACTIVATION { RECEIVED { AES.Host.AEIP.MESSAGES.FunctionalityMsg } }}
+  EVENT msgToolInActiveReceived { ACTIVATION { RECEIVED { AES.Host.AEIP.MESSAGES.ToolInActiveMsg } }}
+  EVENT ToolOk { }
+  EVENT ToolNotFound { ACTIVATION { OCCURRED { EVENTS.msgToolInActiveReceived } } }
+  EVENT reconfigurationDone { }
+  EVENT reconfigurationFailed { }
+  } // EVENTS
+METRICS {//change
+  METRIC NetworkMetric {
+    METRIC_TYPE { RESOURCE }
+    METRIC_SOURCE { AEIP.MANAGED_ELEMENTS.Coordinator.getNetworkMetric }
+    DESCRIPTION { "" }
+    MEASURE_UNIT { "" }
+    VALUE { 100 }//change
+    THRESHOLD_CLASS { DECIMAL [0.001 ~ ) } //change
+  }}} // AE Coordinator
+}
